@@ -1259,6 +1259,212 @@ func TestWebTool_TavilySearch_RangeMapping(t *testing.T) {
 	}
 }
 
+func TestWebTool_KagiSearch_SuccessRequestAndParsing(t *testing.T) {
+	var sawRequest bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawRequest = true
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/search" {
+			t.Fatalf("path = %s, want /search", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Fatalf("Authorization = %q, want Bearer test-key", got)
+		}
+
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode payload: %v", err)
+		}
+		if payload["query"] != "test query" {
+			t.Fatalf("query = %v, want test query", payload["query"])
+		}
+		if payload["workflow"] != "search" {
+			t.Fatalf("workflow = %v, want search", payload["workflow"])
+		}
+		if payload["limit"] != float64(2) {
+			t.Fatalf("limit = %v, want 2", payload["limit"])
+		}
+		lens, ok := payload["lens"].(map[string]any)
+		if !ok || lens["time_relative"] != "week" {
+			t.Fatalf("lens = %v, want time_relative=week", payload["lens"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"data": {
+				"search": [
+					{
+						"title": "Kagi Result 1",
+						"url": "https://example.com/1",
+						"snippet": "<b>first</b> snippet",
+						"time": "2026-01-02T03:04:05Z"
+					},
+					{
+						"title": "Kagi Result 2",
+						"url": "https://example.com/2",
+						"snippet": "second snippet"
+					},
+					{
+						"title": "Kagi Result 3",
+						"url": "https://example.com/3",
+						"snippet": "third snippet"
+					}
+				]
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	tool, err := NewWebSearchTool(WebSearchToolOptions{
+		KagiEnabled:    true,
+		KagiAPIKeys:    []string{"test-key"},
+		KagiBaseURL:    server.URL,
+		KagiMaxResults: 5,
+	})
+	if err != nil {
+		t.Fatalf("NewWebSearchTool() error: %v", err)
+	}
+
+	result := tool.Execute(context.Background(), map[string]any{
+		"query": "test query",
+		"count": float64(2),
+		"range": "w",
+	})
+	if result.IsError {
+		t.Fatalf("expected success, got %s", result.ForLLM)
+	}
+	if !sawRequest {
+		t.Fatal("server did not receive request")
+	}
+	if !strings.Contains(result.ForUser, "via Kagi") ||
+		!strings.Contains(result.ForUser, "Kagi Result 1") ||
+		!strings.Contains(result.ForUser, "https://example.com/1") ||
+		!strings.Contains(result.ForUser, "first snippet") ||
+		!strings.Contains(result.ForUser, "Published: 2026-01-02T03:04:05Z") {
+		t.Fatalf("expected Kagi result fields in output, got: %s", result.ForUser)
+	}
+	if strings.Contains(result.ForUser, "Kagi Result 3") {
+		t.Fatalf("expected output truncated to requested count, got: %s", result.ForUser)
+	}
+}
+
+func TestWebTool_KagiSearch_NoApiKey(t *testing.T) {
+	tool, err := NewWebSearchTool(WebSearchToolOptions{
+		KagiEnabled:    true,
+		KagiMaxResults: 5,
+	})
+	if err != nil {
+		t.Fatalf("NewWebSearchTool() error: %v", err)
+	}
+	if tool != nil {
+		t.Fatal("expected nil tool when Kagi is enabled without API keys")
+	}
+}
+
+func TestWebTool_KagiSearch_AuthErrorDoesNotLeakKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer invalid-kagi-key" {
+			t.Fatalf("Authorization = %q, want Bearer invalid-kagi-key", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"unauthorized"}`))
+	}))
+	defer server.Close()
+
+	tool, err := NewWebSearchTool(WebSearchToolOptions{
+		KagiEnabled:    true,
+		KagiAPIKeys:    []string{"invalid-kagi-key"},
+		KagiBaseURL:    server.URL + "/search",
+		KagiMaxResults: 5,
+	})
+	if err != nil {
+		t.Fatalf("NewWebSearchTool() error: %v", err)
+	}
+
+	result := tool.Execute(context.Background(), map[string]any{"query": "test query"})
+	if !result.IsError {
+		t.Fatal("expected auth error")
+	}
+	if !strings.Contains(result.ForLLM, "authentication failed") {
+		t.Fatalf("unexpected error message: %s", result.ForLLM)
+	}
+	if strings.Contains(result.ForLLM, "invalid-kagi-key") || strings.Contains(result.ForUser, "invalid-kagi-key") {
+		t.Fatalf("error leaked API key: %+v", result)
+	}
+}
+
+func TestWebTool_KagiSearch_Non200Response(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"temporary failure"}`))
+	}))
+	defer server.Close()
+
+	tool, err := NewWebSearchTool(WebSearchToolOptions{
+		KagiEnabled:    true,
+		KagiAPIKeys:    []string{"test-key"},
+		KagiBaseURL:    server.URL,
+		KagiMaxResults: 5,
+	})
+	if err != nil {
+		t.Fatalf("NewWebSearchTool() error: %v", err)
+	}
+
+	result := tool.Execute(context.Background(), map[string]any{"query": "test query"})
+	if !result.IsError {
+		t.Fatal("expected non-200 error")
+	}
+	if !strings.Contains(result.ForLLM, "server error (status 500)") {
+		t.Fatalf("unexpected error message: %s", result.ForLLM)
+	}
+}
+
+func TestWebTool_KagiSearch_SkipsUnsupportedAndMalformedResults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"data": {
+				"image": [
+					{"title": "Image Result", "url": "https://images.example.com/1"}
+				],
+				"search": [
+					{"title": "Missing URL"},
+					{"title": "Usable Result", "url": "https://example.com/usable", "snippet": "usable snippet", "extra": "ignored"}
+				]
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	tool, err := NewWebSearchTool(WebSearchToolOptions{
+		KagiEnabled:    true,
+		KagiAPIKeys:    []string{"test-key"},
+		KagiBaseURL:    server.URL,
+		KagiMaxResults: 5,
+	})
+	if err != nil {
+		t.Fatalf("NewWebSearchTool() error: %v", err)
+	}
+
+	result := tool.Execute(context.Background(), map[string]any{"query": "test query"})
+	if result.IsError {
+		t.Fatalf("expected success, got %s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForUser, "Usable Result") ||
+		!strings.Contains(result.ForUser, "https://example.com/usable") {
+		t.Fatalf("expected usable result, got: %s", result.ForUser)
+	}
+	if strings.Contains(result.ForUser, "Image Result") || strings.Contains(result.ForUser, "Missing URL") {
+		t.Fatalf("unsupported or malformed result was included: %s", result.ForUser)
+	}
+}
+
 // TestWebFetchTool_CloudflareChallenge_RetryWithHonestUA verifies that a 403 response
 // with cf-mitigated: challenge triggers a retry using the honest picoclaw User-Agent,
 // and that the retry response is returned when it succeeds.
