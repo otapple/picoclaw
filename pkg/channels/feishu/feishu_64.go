@@ -1013,7 +1013,13 @@ func (c *FeishuChannel) storeResourceFile(
 		})
 		return ""
 	}
-	out.Close()
+	if err := out.Close(); err != nil {
+		logger.ErrorCF("feishu", "Failed to close downloaded resource file", map[string]any{
+			"error": err.Error(),
+		})
+		os.Remove(localPath)
+		return ""
+	}
 
 	ref, err := store.Store(localPath, media.MediaMeta{
 		Filename:      filename,
