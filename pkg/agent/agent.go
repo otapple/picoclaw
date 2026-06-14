@@ -69,8 +69,14 @@ type AgentLoop struct {
 	activeTurnStates sync.Map
 	subTurnCounter   atomic.Int64
 
-	turnSeq        atomic.Uint64
-	activeRequests sync.WaitGroup
+	turnSeq atomic.Uint64
+
+	// activeReqMu/activeReqCond/activeReqCount replace sync.WaitGroup to
+	// avoid the "WaitGroup is reused before previous Wait has returned" panic
+	// that occurs when Add(1) races with a goroutine-launched Wait().
+	activeReqMu    sync.Mutex
+	activeReqCond  *sync.Cond
+	activeReqCount int
 
 	reloadFunc func() error
 
@@ -208,7 +214,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			// Session claimed — spawn a worker goroutine that acquires a semaphore
 			// slot. The goroutine is spawned immediately so the main loop keeps
 			// draining the inbound channel. The goroutine blocks on the semaphore.
-			go func(m bus.InboundMessage) {
+			go func(m bus.InboundMessage, ph *turnState) {
 				var releaseSession bool
 				// Acquire semaphore slot (blocks if at capacity)
 				select {
@@ -227,7 +233,14 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				// this becomes a no-op (the key is already gone).
 				defer func() {
 					if releaseSession {
-						al.releaseSessionTurnState(sessionKey, nil)
+						// Conditional delete: only remove the entry if it still points
+						// to our placeholder. A new message may have claimed the slot
+						// between the panic and this defer.
+						if actual, ok := al.activeTurnStates.Load(sessionKey); ok {
+							if ts, ok := actual.(*turnState); ok && ts == ph {
+								al.releaseSessionTurnState(sessionKey, ts)
+							}
+						}
 						return
 					}
 					if actual, ok := al.activeTurnStates.Load(sessionKey); ok {
@@ -276,7 +289,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				}
 
 				al.runTurnWithSteering(ctx, m)
-			}(msg)
+			}(msg, placeholder)
 
 			// TODO: Re-enable media cleanup after inbound media is properly consumed by the agent.
 			// Currently disabled because files are deleted before the LLM can access their content.

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -307,8 +308,9 @@ func TestReloadProviderAndConfigWaitsForInFlightRequestsBeforeClosingOldProvider
 
 func TestWaitForActiveRequestsHonorsContextCancellation(t *testing.T) {
 	al := &AgentLoop{}
-	al.activeRequests.Add(1)
-	defer al.activeRequests.Done()
+	al.activeReqCond = sync.NewCond(&al.activeReqMu)
+	al.activeRequestsInc()
+	defer al.activeRequestsDec()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

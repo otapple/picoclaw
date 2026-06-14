@@ -585,33 +585,55 @@ func closeProviderIfStateful(provider providers.LLMProvider) {
 	}
 }
 
+// activeRequestsInc atomically increments the active request count.
+func (al *AgentLoop) activeRequestsInc() {
+	al.activeReqMu.Lock()
+	al.activeReqCount++
+	al.activeReqMu.Unlock()
+}
+
+// activeRequestsDec atomically decrements the active request count
+// and wakes any goroutine blocked in waitForActiveRequests when the
+// count reaches zero.
+func (al *AgentLoop) activeRequestsDec() {
+	al.activeReqMu.Lock()
+	al.activeReqCount--
+	if al.activeReqCount == 0 {
+		al.activeReqCond.Broadcast()
+	}
+	al.activeReqMu.Unlock()
+}
+
 func (al *AgentLoop) waitForActiveRequests(ctx context.Context, timeout time.Duration) bool {
-	done := make(chan struct{})
+	al.activeReqMu.Lock()
+	if al.activeReqCount == 0 {
+		al.activeReqMu.Unlock()
+		return true
+	}
+
+	// Wake blocked Wait() callers on timeout or context cancellation.
+	var timedOut bool
+	if timeout > 0 {
+		time.AfterFunc(timeout, func() {
+			al.activeReqMu.Lock()
+			timedOut = true
+			al.activeReqCond.Broadcast()
+			al.activeReqMu.Unlock()
+		})
+	}
 	go func() {
-		al.activeRequests.Wait()
-		close(done)
+		<-ctx.Done()
+		al.activeReqMu.Lock()
+		al.activeReqCond.Broadcast()
+		al.activeReqMu.Unlock()
 	}()
 
-	if timeout <= 0 {
-		select {
-		case <-done:
-			return true
-		case <-ctx.Done():
-			return false
-		}
+	for al.activeReqCount > 0 && !timedOut && ctx.Err() == nil {
+		al.activeReqCond.Wait()
 	}
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	select {
-	case <-done:
-		return true
-	case <-timer.C:
-		return false
-	case <-ctx.Done():
-		return false
-	}
+	result := al.activeReqCount == 0
+	al.activeReqMu.Unlock()
+	return result
 }
 
 func (al *AgentLoop) closeReloadedProvider(ctx context.Context, provider providers.StatefulProvider) {

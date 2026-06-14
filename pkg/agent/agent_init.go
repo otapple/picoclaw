@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
@@ -91,6 +92,7 @@ func NewAgentLoop(
 			})
 		}
 	}
+	al.activeReqCond = sync.NewCond(&al.activeReqMu)
 	al.refreshRuntimeEventLogger(cfg)
 	al.providerFactory = providers.CreateProviderFromConfig
 	al.hooks = NewHookManager(al.runtimeEvents.Channel())
