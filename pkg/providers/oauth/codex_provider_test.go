@@ -7,8 +7,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/openai/openai-go/v3"
-	openaiopt "github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/responses"
 
 	orc "github.com/sipeed/picoclaw/pkg/providers/openai_responses_common"
@@ -354,7 +352,7 @@ func TestCodexProvider_ChatRoundTrip(t *testing.T) {
 	defer server.Close()
 
 	provider := NewCodexProvider("test-token", "acc-123")
-	provider.client = createOpenAITestClient(server.URL, "test-token", "acc-123")
+	provider.apiBase = server.URL
 
 	messages := []Message{{Role: "user", Content: "Hello"}}
 	// Pass native_search so Codex injects built-in web search (mirrors agent loop when prefer_native is true).
@@ -402,7 +400,7 @@ func TestCodexProvider_ChatRoundTrip_OutputTextDeltaFallback(t *testing.T) {
 	defer server.Close()
 
 	provider := NewCodexProvider("test-token", "acc-123")
-	provider.client = createOpenAITestClient(server.URL, "test-token", "acc-123")
+	provider.apiBase = server.URL
 
 	resp, err := provider.Chat(
 		t.Context(),
@@ -416,6 +414,57 @@ func TestCodexProvider_ChatRoundTrip_OutputTextDeltaFallback(t *testing.T) {
 	}
 	if resp.Content != "OK" {
 		t.Errorf("Content = %q, want %q", resp.Content, "OK")
+	}
+}
+
+func TestCodexProvider_ChatRoundTrip_SkipsHeartbeatFrames(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			http.Error(w, "not found: "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.Header.Get("Chatgpt-Account-Id") != "acc-123" {
+			http.Error(w, "missing account id", http.StatusBadRequest)
+			return
+		}
+		writeHeartbeatThenCompletedSSE(w, map[string]any{
+			"id":     "resp_test",
+			"object": "response",
+			"status": "completed",
+			"output": []map[string]any{
+				{
+					"id":     "msg_1",
+					"type":   "message",
+					"role":   "assistant",
+					"status": "completed",
+					"content": []map[string]any{
+						{"type": "output_text", "text": "codex heartbeat ok"},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider := NewCodexProvider("test-token", "acc-123")
+	provider.apiBase = server.URL
+
+	resp, err := provider.Chat(
+		t.Context(),
+		[]Message{{Role: "user", Content: "Hello"}},
+		nil,
+		"gpt-4o",
+		map[string]any{},
+	)
+	if err != nil {
+		t.Fatalf("Chat() error: %v", err)
+	}
+	if resp.Content != "codex heartbeat ok" {
+		t.Fatalf("Content = %q, want codex heartbeat ok", resp.Content)
 	}
 }
 
@@ -455,7 +504,7 @@ func TestCodexProvider_ChatRoundTrip_OutputItemDoneFallback(t *testing.T) {
 	defer server.Close()
 
 	provider := NewCodexProvider("test-token", "acc-123")
-	provider.client = createOpenAITestClient(server.URL, "test-token", "acc-123")
+	provider.apiBase = server.URL
 
 	resp, err := provider.Chat(
 		t.Context(),
@@ -543,7 +592,7 @@ func TestCodexProvider_ChatRoundTrip_WebSearchDisabled(t *testing.T) {
 
 	provider := NewCodexProvider("test-token", "acc-123")
 	provider.enableWebSearch = false
-	provider.client = createOpenAITestClient(server.URL, "test-token", "acc-123")
+	provider.apiBase = server.URL
 
 	messages := []Message{{Role: "user", Content: "Hello"}}
 	resp, err := provider.Chat(t.Context(), messages, nil, "gpt-4o", map[string]any{})
@@ -624,7 +673,7 @@ func TestCodexProvider_ChatRoundTrip_TokenSourceFallbackAccountID(t *testing.T) 
 	defer server.Close()
 
 	provider := NewCodexProvider("stale-token", "acc-123")
-	provider.client = createOpenAITestClient(server.URL, "stale-token", "")
+	provider.apiBase = server.URL
 	provider.tokenSource = func() (string, string, error) {
 		return "refreshed-token", "", nil
 	}
@@ -692,7 +741,7 @@ func TestCodexProvider_ChatRoundTrip_ModelFallbackFromUnsupported(t *testing.T) 
 	defer server.Close()
 
 	provider := NewCodexProvider("test-token", "acc-123")
-	provider.client = createOpenAITestClient(server.URL, "test-token", "acc-123")
+	provider.apiBase = server.URL
 
 	messages := []Message{{Role: "user", Content: "Hello"}}
 	resp, err := provider.Chat(t.Context(), messages, nil, "gpt-5.3-codex", nil)
@@ -746,18 +795,6 @@ func TestResolveCodexModel(t *testing.T) {
 	}
 }
 
-func createOpenAITestClient(baseURL, token, accountID string) *openai.Client {
-	opts := []openaiopt.RequestOption{
-		openaiopt.WithBaseURL(baseURL),
-		openaiopt.WithAPIKey(token),
-	}
-	if accountID != "" {
-		opts = append(opts, openaiopt.WithHeader("Chatgpt-Account-Id", accountID))
-	}
-	c := openai.NewClient(opts...)
-	return &c
-}
-
 func writeCompletedSSE(w http.ResponseWriter, response map[string]any) {
 	event := map[string]any{
 		"type":            "response.completed",
@@ -766,6 +803,21 @@ func writeCompletedSSE(w http.ResponseWriter, response map[string]any) {
 	}
 	b, _ := json.Marshal(event)
 	w.Header().Set("Content-Type", "text/event-stream")
+	fmt.Fprintf(w, "event: response.completed\n")
+	fmt.Fprintf(w, "data: %s\n\n", string(b))
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+}
+
+func writeHeartbeatThenCompletedSSE(w http.ResponseWriter, response map[string]any) {
+	event := map[string]any{
+		"type":            "response.completed",
+		"sequence_number": 1,
+		"response":        response,
+	}
+	b, _ := json.Marshal(event)
+	w.Header().Set("Content-Type", "text/event-stream")
+	fmt.Fprintf(w, ": keep-alive\n\n")
+	fmt.Fprintf(w, "event: ping\n\n")
 	fmt.Fprintf(w, "event: response.completed\n")
 	fmt.Fprintf(w, "data: %s\n\n", string(b))
 	fmt.Fprintf(w, "data: [DONE]\n\n")

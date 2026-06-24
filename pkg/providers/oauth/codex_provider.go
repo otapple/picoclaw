@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/responses"
 
 	"github.com/sipeed/picoclaw/pkg/auth"
@@ -21,8 +21,11 @@ const (
 )
 
 type CodexProvider struct {
-	client          *openai.Client
+	httpClient      *http.Client
+	apiBase         string
+	apiKey          string
 	accountID       string
+	baseHeaders     map[string]string
 	tokenSource     func() (string, string, error)
 	enableWebSearch bool
 }
@@ -30,19 +33,15 @@ type CodexProvider struct {
 const defaultCodexInstructions = "You are Codex, a coding assistant."
 
 func NewCodexProvider(token, accountID string) *CodexProvider {
-	opts := []option.RequestOption{
-		option.WithBaseURL("https://chatgpt.com/backend-api/codex"),
-		option.WithAPIKey(token),
-		option.WithHeader("originator", "codex_cli_rs"),
-		option.WithHeader("OpenAI-Beta", "responses=experimental"),
-	}
-	if accountID != "" {
-		opts = append(opts, option.WithHeader("Chatgpt-Account-Id", accountID))
-	}
-	client := openai.NewClient(opts...)
 	return &CodexProvider{
-		client:          &client,
-		accountID:       accountID,
+		httpClient: http.DefaultClient,
+		apiBase:    "https://chatgpt.com/backend-api/codex",
+		apiKey:     token,
+		accountID:  accountID,
+		baseHeaders: map[string]string{
+			"originator":  "codex_cli_rs",
+			"OpenAI-Beta": "responses=experimental",
+		},
 		enableWebSearch: true,
 	}
 }
@@ -58,7 +57,10 @@ func NewCodexProviderWithTokenSource(
 func (p *CodexProvider) Chat(
 	ctx context.Context, messages []Message, tools []ToolDefinition, model string, options map[string]any,
 ) (*LLMResponse, error) {
-	var opts []option.RequestOption
+	if p == nil || p.httpClient == nil {
+		return nil, fmt.Errorf("codex provider is not configured")
+	}
+	apiKey := p.apiKey
 	accountID := p.accountID
 	resolvedModel, fallbackReason := resolveCodexModel(model)
 	if fallbackReason != "" {
@@ -77,13 +79,14 @@ func (p *CodexProvider) Chat(
 		if err != nil {
 			return nil, fmt.Errorf("refreshing token: %w", err)
 		}
-		opts = append(opts, option.WithAPIKey(tok))
+		apiKey = tok
 		if accID != "" {
 			accountID = accID
 		}
 	}
+	headers := cloneStringMap(p.baseHeaders)
 	if accountID != "" {
-		opts = append(opts, option.WithHeader("Chatgpt-Account-Id", accountID))
+		headers["Chatgpt-Account-Id"] = accountID
 	} else {
 		logger.WarnCF(
 			"provider.codex",
@@ -100,32 +103,13 @@ func (p *CodexProvider) Chat(
 	useNativeSearch := p.enableWebSearch && (options["native_search"] == true)
 	params := buildCodexParams(messages, tools, resolvedModel, options, useNativeSearch)
 
-	stream := p.client.Responses.NewStreaming(ctx, params, opts...)
-	defer stream.Close()
-
-	var resp *responses.Response
-	var streamedText strings.Builder
-	streamedOutputItems := make([]responses.ResponseOutputItemUnion, 0)
-	for stream.Next() {
-		evt := stream.Current()
-		if evt.Type == "response.output_text.delta" {
-			streamedText.WriteString(evt.Delta)
-		}
-		if evt.Type == "response.output_item.done" {
-			itemEvt := evt.AsResponseOutputItemDone()
-			if itemEvt.Item.Type != "" {
-				streamedOutputItems = append(streamedOutputItems, itemEvt.Item)
-			}
-		}
-		if evt.Type == "response.completed" || evt.Type == "response.failed" || evt.Type == "response.incomplete" {
-			evtResp := evt.Response
-			if evtResp.ID != "" {
-				evtRespCopy := evtResp
-				resp = &evtRespCopy
-			}
-		}
-	}
-	err := stream.Err()
+	parsed, err := orc.DoStreamingResponseRequest(ctx, orc.StreamingRequest{
+		HTTPClient: p.httpClient,
+		APIBase:    p.apiBase,
+		APIKey:     apiKey,
+		Headers:    headers,
+		Params:     params,
+	})
 	if err != nil {
 		fields := map[string]any{
 			"requested_model":    model,
@@ -149,27 +133,16 @@ func (p *CodexProvider) Chat(
 				fields["request_id"] = apiErr.Response.Header.Get("x-request-id")
 			}
 		}
+		var streamErr *orc.ResponsesStreamError
+		if errors.As(err, &streamErr) {
+			fields["status_code"] = streamErr.StatusCode
+			fields["content_type"] = streamErr.ContentType
+			fields["request_id"] = streamErr.RequestID
+			fields["event_type"] = streamErr.EventType
+			fields["response_preview"] = streamErr.Preview
+		}
 		logger.ErrorCF("provider.codex", "Codex API call failed", fields)
 		return nil, fmt.Errorf("codex API call: %w", err)
-	}
-	if resp == nil {
-		fields := map[string]any{
-			"requested_model":    model,
-			"resolved_model":     resolvedModel,
-			"messages_count":     len(messages),
-			"tools_count":        len(tools),
-			"account_id_present": accountID != "",
-		}
-		logger.ErrorCF("provider.codex", "Codex stream ended without completed response event", fields)
-		return nil, fmt.Errorf("codex API call: stream ended without completed response")
-	}
-	if len(resp.Output) == 0 && len(streamedOutputItems) > 0 {
-		resp.Output = streamedOutputItems
-	}
-
-	parsed := orc.ParseResponseFromStruct(resp)
-	if parsed.Content == "" && streamedText.Len() > 0 {
-		parsed.Content = streamedText.String()
 	}
 	return parsed, nil
 }
@@ -180,6 +153,17 @@ func (p *CodexProvider) GetDefaultModel() string {
 
 func (p *CodexProvider) SupportsNativeSearch() bool {
 	return p.enableWebSearch
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return map[string]string{}
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func resolveCodexModel(model string) (string, string) {

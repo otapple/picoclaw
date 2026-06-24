@@ -420,6 +420,7 @@ PicoClaw supports 30+ LLM providers through the `model_list` configuration. Use 
 | Provider | Protocol | API Key | Notes |
 |----------|----------|---------|-------|
 | [OpenAI](https://platform.openai.com/api-keys) | `openai/` | Required | GPT-5.4, GPT-4o, o3, etc. |
+| [OpenAI Responses](https://platform.openai.com/api-keys) | `openai-responses/` | Required | Responses API with native web search and thinking level support |
 | [Anthropic](https://console.anthropic.com/settings/keys) | `anthropic/` | Required | Claude Opus 4.6, Sonnet 4.6, etc. |
 | [Google Gemini](https://aistudio.google.com/apikey) | `gemini/` | Required | Gemini 3 Flash, 2.5 Pro, etc. |
 | [OpenRouter](https://openrouter.ai/keys) | `openrouter/` | Required | 200+ models, unified API |

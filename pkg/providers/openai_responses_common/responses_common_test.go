@@ -2,7 +2,9 @@ package openai_responses_common
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -503,6 +505,64 @@ func TestParseResponseBody_CanceledStatus(t *testing.T) {
 	}
 	if result.FinishReason != "canceled" {
 		t.Errorf("FinishReason = %q, want %q", result.FinishReason, "canceled")
+	}
+}
+
+func TestParseStreamingResponse_SkipsHeartbeatFrames(t *testing.T) {
+	stream := strings.NewReader(`: keep-alive
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":1,"delta":"OK"}
+
+event: ping
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_stream","object":"response","status":"completed","output":null}}
+
+data: [DONE]
+
+`)
+
+	result, err := ParseStreamingResponse(t.Context(), stream, StreamResponseMeta{
+		StatusCode:  http.StatusOK,
+		ContentType: "text/event-stream",
+		RequestID:   "req_123",
+	})
+	if err != nil {
+		t.Fatalf("ParseStreamingResponse error: %v", err)
+	}
+	if result.Content != "OK" {
+		t.Fatalf("Content = %q, want OK", result.Content)
+	}
+}
+
+func TestParseStreamingResponse_MalformedEventIncludesPreview(t *testing.T) {
+	stream := strings.NewReader(`event: response.completed
+data: {"type":"response.completed"
+
+`)
+
+	_, err := ParseStreamingResponse(t.Context(), stream, StreamResponseMeta{
+		StatusCode:  http.StatusOK,
+		ContentType: "text/event-stream",
+		RequestID:   "req_bad",
+	})
+	if err == nil {
+		t.Fatal("expected malformed event error")
+	}
+
+	var streamErr *ResponsesStreamError
+	if !errors.As(err, &streamErr) {
+		t.Fatalf("error type = %T, want *ResponsesStreamError", err)
+	}
+	if streamErr.EventType != "response.completed" {
+		t.Fatalf("EventType = %q, want response.completed", streamErr.EventType)
+	}
+	if streamErr.RequestID != "req_bad" {
+		t.Fatalf("RequestID = %q, want req_bad", streamErr.RequestID)
+	}
+	if !strings.Contains(streamErr.Preview, `"response.completed"`) {
+		t.Fatalf("Preview = %q, want event preview", streamErr.Preview)
 	}
 }
 

@@ -37,6 +37,12 @@ func TestExtractProtocol(t *testing.T) {
 			wantModelID:  "claude-sonnet-4.6",
 		},
 		{
+			name:         "openai responses with prefix",
+			config:       &config.ModelConfig{Model: "openai-responses/gpt-5.4"},
+			wantProtocol: "openai-responses",
+			wantModelID:  "gpt-5.4",
+		},
+		{
 			name:         "no prefix - defaults to openai",
 			config:       &config.ModelConfig{Model: "gpt-4o"},
 			wantProtocol: "openai",
@@ -145,6 +151,62 @@ func TestCreateProviderFromConfig_OpenAI(t *testing.T) {
 	}
 	if modelID != "gpt-4o" {
 		t.Errorf("modelID = %q, want %q", modelID, "gpt-4o")
+	}
+}
+
+func TestCreateProviderFromConfig_OpenAIResponses(t *testing.T) {
+	cfg := &config.ModelConfig{
+		ModelName: "test-openai-responses",
+		Model:     "openai-responses/gpt-5.4",
+		APIBase:   "https://api.example.com/v1",
+	}
+	cfg.SetAPIKey("test-key")
+
+	provider, modelID, err := CreateProviderFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("CreateProviderFromConfig() error = %v", err)
+	}
+	if modelID != "gpt-5.4" {
+		t.Fatalf("modelID = %q, want gpt-5.4", modelID)
+	}
+	if _, ok := provider.(*OpenAIResponsesProvider); !ok {
+		t.Fatalf("provider = %T, want *OpenAIResponsesProvider", provider)
+	}
+}
+
+func TestCreateProviderFromConfig_OpenAIResponsesExplicitProvider(t *testing.T) {
+	cfg := &config.ModelConfig{
+		ModelName: "test-openai-responses",
+		Provider:  "openai-responses",
+		Model:     "gpt-5.4",
+	}
+	cfg.SetAPIKey("test-key")
+
+	provider, modelID, err := CreateProviderFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("CreateProviderFromConfig() error = %v", err)
+	}
+	if modelID != "gpt-5.4" {
+		t.Fatalf("modelID = %q, want gpt-5.4", modelID)
+	}
+	if _, ok := provider.(*OpenAIResponsesProvider); !ok {
+		t.Fatalf("provider = %T, want *OpenAIResponsesProvider", provider)
+	}
+}
+
+func TestCreateProviderFromConfig_OpenAIResponsesMissingAPIKey(t *testing.T) {
+	cfg := &config.ModelConfig{
+		ModelName: "test-openai-responses",
+		Model:     "openai-responses/gpt-5.4",
+		APIBase:   "https://api.example.com/v1",
+	}
+
+	_, _, err := CreateProviderFromConfig(cfg)
+	if err == nil {
+		t.Fatal("CreateProviderFromConfig() expected error for missing API key")
+	}
+	if !strings.Contains(err.Error(), "api_key is required") {
+		t.Fatalf("error = %v, want api_key required", err)
 	}
 }
 
@@ -1080,6 +1142,19 @@ func TestModelProviderOptions(t *testing.T) {
 		t.Fatalf("openai display_name = %q, want %q", option.DisplayName, "OpenAI")
 	} else if len(option.CommonModels) == 0 {
 		t.Fatal("openai common_models should not be empty")
+	}
+	if option, ok := seen["openai-responses"]; !ok {
+		t.Fatal("openai-responses option missing")
+	} else {
+		if option.DefaultAPIBase != "https://api.openai.com/v1" {
+			t.Fatalf("openai-responses default_api_base = %q, want OpenAI v1", option.DefaultAPIBase)
+		}
+		if option.EmptyAPIKeyAllowed {
+			t.Fatal("openai-responses should require API keys")
+		}
+		if !option.DefaultModelAllowed {
+			t.Fatal("openai-responses should be allowed as a default model provider")
+		}
 	}
 	if option, ok := seen["lmstudio"]; !ok {
 		t.Fatal("lmstudio option missing")

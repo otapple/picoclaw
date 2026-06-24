@@ -16,6 +16,7 @@
 | `openrouter` | LLM (recommended, access to all models) | [openrouter.ai](https://openrouter.ai)                       |
 | `anthropic`  | LLM (Claude direct)                     | [console.anthropic.com](https://console.anthropic.com)       |
 | `openai`     | LLM (GPT direct)                        | [platform.openai.com](https://platform.openai.com)           |
+| `openai-responses` | LLM (OpenAI Responses API)        | [platform.openai.com](https://platform.openai.com)           |
 | `venice`     | LLM (Venice AI direct)                  | [venice.ai](https://venice.ai)                               |
 | `nearai`     | LLM (NEAR AI Cloud TEE inference)       | [near.ai](https://near.ai)                                   |
 | `deepseek`   | LLM (DeepSeek direct)                   | [platform.deepseek.com](https://platform.deepseek.com)       |
@@ -50,6 +51,7 @@ This design also enables **multi-agent support** with flexible provider selectio
 | Vendor              | `provider` Value  | Default API Base                                    | Protocol  | API Key                                                          |
 | ------------------- | ----------------- |-----------------------------------------------------| --------- | ---------------------------------------------------------------- |
 | **OpenAI**          | `openai`          | `https://api.openai.com/v1`                         | OpenAI    | [Get Key](https://platform.openai.com)                           |
+| **OpenAI Responses** | `openai-responses` | `https://api.openai.com/v1`                       | Responses | [Get Key](https://platform.openai.com)                           |
 | **Venice AI**       | `venice`          | `https://api.venice.ai/api/v1`                      | OpenAI    | [Get Key](https://venice.ai)                                     |
 | **NEAR AI Cloud**   | `nearai`          | `https://cloud-api.near.ai/v1`                      | OpenAI    | [Get Key](https://near.ai)                                       |
 | **Anthropic**       | `anthropic`       | `https://api.anthropic.com/v1`                      | Anthropic | [Get Key](https://console.anthropic.com)                         |
@@ -94,6 +96,14 @@ This design also enables **multi-agent support** with flexible provider selectio
       "provider": "openai",
       "model": "gpt-5.4",
       "api_keys": ["sk-your-openai-key"]
+    },
+    {
+      "model_name": "gpt-5.4-responses",
+      "provider": "openai-responses",
+      "model": "gpt-5.4",
+      "api_keys": ["sk-your-openai-key"],
+      "api_base": "https://api.openai.com/v1",
+      "thinking_level": "high"
     },
     {
       "model_name": "claude-sonnet-4.6",
@@ -257,6 +267,23 @@ Notes that matter:
   "api_keys": ["sk-..."]
 }
 ```
+
+**OpenAI Responses API**
+
+Use this provider when the endpoint supports OpenAI's `/v1/responses` API rather than the Chat Completions-compatible `/v1/chat/completions` route.
+
+```json
+{
+  "model_name": "gpt-5.4-responses",
+  "provider": "openai-responses",
+  "model": "gpt-5.4",
+  "api_keys": ["sk-..."],
+  "api_base": "https://api.openai.com/v1",
+  "thinking_level": "high"
+}
+```
+
+This provider supports native OpenAI web search when `tools.web.prefer_native` is enabled, and maps `thinking_level` to the Responses API reasoning effort.
 
 **NEAR AI Cloud**
 
@@ -531,6 +558,7 @@ For detailed migration guide, see [migration/model-list-migration.md](../migrati
 PicoClaw routes providers by protocol family:
 
 - OpenAI-compatible protocol: OpenRouter, OpenAI-compatible gateways, Groq, Zhipu, and vLLM-style endpoints.
+- OpenAI Responses protocol: OpenAI `/v1/responses` endpoints with API key authentication.
 - Gemini native protocol: Google Gemini via the native `models/*:generateContent` and `models/*:streamGenerateContent` endpoints.
 - Anthropic protocol: Claude-native API behavior.
 - Codex/OAuth path: OpenAI OAuth/token authentication route.

@@ -61,6 +61,7 @@ func TestNormalizeProvider(t *testing.T) {
 		want  string
 	}{
 		{"OpenAI", "openai"},
+		{"openai-responses", "openai-responses"},
 		{"ANTHROPIC", "anthropic"},
 		{"z.ai", "zai"},
 		{"z-ai", "zai"},

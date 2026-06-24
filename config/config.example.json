@@ -38,6 +38,14 @@
       "api_base": "https://api.openai.com/v1"
     },
     {
+      "model_name": "gpt-5.4-responses",
+      "provider": "openai-responses",
+      "model": "gpt-5.4",
+      "api_keys": ["sk-your-openai-key"],
+      "api_base": "https://api.openai.com/v1",
+      "thinking_level": "high"
+    },
+    {
       "model_name": "claude-sonnet-4.6",
       "model": "anthropic/claude-sonnet-4.6",
       "api_keys": ["sk-ant-your-key"],

@@ -64,6 +64,18 @@ var modelProviderOptionsByName = map[string]ModelProviderOption{
 		CommonModels:        []string{"claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"},
 		httpAPI:             true,
 	},
+	"openai-responses": {
+		ID:                  "openai-responses",
+		DisplayName:         "OpenAI Responses",
+		IconSlug:            "openai",
+		Domain:              "openai.com",
+		DefaultAPIBase:      "https://api.openai.com/v1",
+		CreateAllowed:       true,
+		DefaultModelAllowed: true,
+		Priority:            93,
+		CommonModels:        []string{"gpt-5.4", "gpt-5.4-mini", "gpt-5.5"},
+		httpAPI:             true,
+	},
 	"gemini": {
 		ID:                  "gemini",
 		DisplayName:         "Google Gemini",
